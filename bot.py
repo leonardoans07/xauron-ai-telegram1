@@ -149,6 +149,9 @@ def atr(candles: List[Candle], length: int) -> float:
 
 
 def vortex(candles: List[Candle], length: int) -> Tuple[float, float]:
+    """
+    Mantém a lógica igual. Só o nome exibido mudou (Xauron).
+    """
     if len(candles) < length + 1:
         raise RuntimeError("Poucos candles para Vortex.")
     vm_plus, vm_minus, tr = [], [], []
@@ -199,7 +202,7 @@ def fmt_price(x: float) -> str:
 
 def format_alert(symbol: str, interval: str, signal: str, strength: float, vi_p: float, vi_m: float, atr_val: float, plan: Dict[str, float]) -> str:
     return (
-        f"🚨 *ALERTA VORTEX*\n"
+        f"🚨 *ALERTA XAURON*\n"
         f"• Ativo: *{symbol}*\n"
         f"• TF: *{interval}*\n\n"
         f"✅ *Sinal:* *{signal}*\n"
@@ -232,7 +235,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     AUTO_SYMBOLS_BY_CHAT.setdefault(chat_id, _parse_csv_list(DEFAULT_SYMBOLS))
 
     await update.message.reply_text(
-        "👋 *Xauron Vortex Scanner*\n\n"
+        "👋 *XAURON Scanner*\n\n"
         "📌 Consulta manual:\n"
         "• `XAUUSD`\n"
         "• `XAUUSD 5min`\n\n"
@@ -264,7 +267,7 @@ async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Use: `/autoscan on` ou `/autoscan off`", parse_mode=ParseMode.MARKDOWN)
         return
     AUTO_ENABLED[chat_id] = (arg == "on")
-    await update.message.reply_text(f"Auto-scan: *{arg.upper()}*", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(f"Scanner automático: *{arg.upper()}*", parse_mode=ParseMode.MARKDOWN)
 
 
 async def settf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -300,7 +303,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     interval = interval or DEFAULT_INTERVAL
 
     try:
-        await update.message.reply_text("⏳ Pegando candles + calculando Vortex…", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("⏳ Pegando candles + calculando XAURON…", parse_mode=ParseMode.MARKDOWN)
 
         signal, plan, strength, vi_p, vi_m, atr_val = await analyze_once(symbol, interval)
         if signal == "WAIT":
@@ -350,7 +353,7 @@ async def autoscan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         LAST_STATE[key] = "WAIT"
 
                 except Exception as e:
-                    log.warning("Autoscan erro %s %s: %s", raw_sym, tf, e)
+                    log.warning("Scanner erro %s %s: %s", raw_sym, tf, e)
 
 
 def build_application(token: str) -> Application:
