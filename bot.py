@@ -17,11 +17,12 @@ from telegram.ext import (
 
 log = logging.getLogger("bot")
 
-# ====== ENV ======
+# =============================================================================
+# ENV
+# =============================================================================
 TWELVE_API_KEY = (os.getenv("TWELVE_API_KEY") or "").strip()
 
 DEFAULT_INTERVAL = (os.getenv("DEFAULT_INTERVAL") or "5min").strip()
-
 DEFAULT_SYMBOLS = (os.getenv("DEFAULT_SYMBOLS") or "XAUUSD").strip()          # ex: "XAUUSD,EURUSD,BTCUSD"
 AUTO_TFS = (os.getenv("AUTO_TFS") or "1min,5min,15min,1h").strip()            # timeframes do scan
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS") or "60")       # a cada 60s
@@ -34,7 +35,13 @@ ATR_TP1_MULT = float(os.getenv("ATR_TP1_MULT") or "1.0")
 ATR_TP2_MULT = float(os.getenv("ATR_TP2_MULT") or "2.0")
 ATR_TP3_MULT = float(os.getenv("ATR_TP3_MULT") or "3.0")
 
-MIN_STRENGTH = float(os.getenv("MIN_STRENGTH") or "0.12")  # filtro pra evitar sinal fraco
+MIN_STRENGTH = float(os.getenv("MIN_STRENGTH") or "0.12")   # força mínima VI para considerar
+EMA_LENGTH = int(os.getenv("EMA_LENGTH") or "200")           # filtro de tendência
+MIN_ATR_PCT = float(os.getenv("MIN_ATR_PCT") or "0.001")     # 0.1% do preço (anti-lateral)
+MIN_SCORE = int(os.getenv("MIN_SCORE") or "70")              # score mínimo para alertar
+
+MTF_FILTER = (os.getenv("MTF_FILTER") or "1").strip() == "1"
+MTF_TIMEFRAME = (os.getenv("MTF_TIMEFRAME") or "1h").strip() # timeframe maior (filtro)
 
 # Anti-spam: último estado por (chat, symbol, tf)
 LAST_STATE: Dict[Tuple[int, str, str], str] = {}
@@ -54,7 +61,9 @@ class Candle:
     c: float
 
 
-# ====== SYMBOL PARSING ======
+# =============================================================================
+# SYMBOL PARSING
+# =============================================================================
 def _normalize_symbol(raw: str) -> str:
     s = raw.strip().upper().replace("#", "").replace("$", "")
     if "/" in s:
@@ -94,8 +103,10 @@ def _parse_csv_list(s: str) -> List[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
 
 
-# ====== TWELVE DATA ======
-async def fetch_candles_twelve(symbol: str, interval: str, outputsize: int = 220) -> List[Candle]:
+# =============================================================================
+# TWELVE DATA
+# =============================================================================
+async def fetch_candles_twelve(symbol: str, interval: str, outputsize: int = 260) -> List[Candle]:
     if not TWELVE_API_KEY:
         raise RuntimeError("TWELVE_API_KEY não configurada no Railway.")
 
@@ -122,7 +133,7 @@ async def fetch_candles_twelve(symbol: str, interval: str, outputsize: int = 220
         raise RuntimeError("TwelveData não retornou candles (values vazio).")
 
     candles: List[Candle] = []
-    for row in reversed(values):
+    for row in reversed(values):  # inverter (mais antigo -> mais recente)
         candles.append(Candle(
             t=row["datetime"],
             o=float(row["open"]),
@@ -133,7 +144,9 @@ async def fetch_candles_twelve(symbol: str, interval: str, outputsize: int = 220
     return candles
 
 
-# ====== INDICATORS ======
+# =============================================================================
+# INDICATORS
+# =============================================================================
 def _true_range(curr: Candle, prev_close: float) -> float:
     return max(curr.h - curr.l, abs(curr.h - prev_close), abs(curr.l - prev_close))
 
@@ -148,12 +161,10 @@ def atr(candles: List[Candle], length: int) -> float:
     return sum(window) / len(window)
 
 
-def XAURON(candles: List[Candle], length: int) -> Tuple[float, float]:
-    """
-    Mantém a lógica igual. Só o nome exibido mudou (Xauron).
-    """
+def vortex(candles: List[Candle], length: int) -> Tuple[float, float]:
+    # Mantém a lógica igual; só o nome exibido é XAURON.
     if len(candles) < length + 1:
-        raise RuntimeError("Poucos candles para XAURON.")
+        raise RuntimeError("Poucos candles para cálculo.")
     vm_plus, vm_minus, tr = [], [], []
 
     for i in range(1, len(candles)):
@@ -173,7 +184,25 @@ def XAURON(candles: List[Candle], length: int) -> Tuple[float, float]:
     return vi_plus, vi_minus
 
 
-# ====== SIGNAL + PLAN ======
+def ema(values: List[float], length: int) -> float:
+    if len(values) < length:
+        raise RuntimeError("Poucos valores para EMA.")
+    k = 2 / (length + 1)
+    e = values[0]
+    for v in values[1:]:
+        e = v * k + e * (1 - k)
+    return e
+
+
+def atr_percent(atr_val: float, price: float) -> float:
+    if price == 0:
+        return 0.0
+    return atr_val / price
+
+
+# =============================================================================
+# SIGNAL + PLAN
+# =============================================================================
 def decide_signal(vi_p: float, vi_m: float) -> Tuple[str, float]:
     strength = abs(vi_p - vi_m)
     if strength < MIN_STRENGTH:
@@ -200,7 +229,7 @@ def fmt_price(x: float) -> str:
     return f"{x:.2f}" if x >= 100 else f"{x:.5f}"
 
 
-def format_alert(symbol: str, interval: str, signal: str, strength: float, vi_p: float, vi_m: float, atr_val: float, plan: Dict[str, float]) -> str:
+def format_alert(symbol: str, interval: str, signal: str, strength: float, vi_p: float, vi_m: float, atr_val: float, plan: Dict[str, float], score: int) -> str:
     return (
         f"🚨 *ALERTA XAURON*\n"
         f"• Ativo: *{symbol}*\n"
@@ -209,24 +238,61 @@ def format_alert(symbol: str, interval: str, signal: str, strength: float, vi_p:
         f"🎯 Entrada: `{fmt_price(plan['entry'])}`\n"
         f"🛡 Stop: `{fmt_price(plan['sl'])}`\n"
         f"🏁 TP1: `{fmt_price(plan['tp1'])}` | TP2: `{fmt_price(plan['tp2'])}` | TP3: `{fmt_price(plan['tp3'])}`\n\n"
-        f"🔎 VI+ `{vi_p:.3f}` vs VI- `{vi_m:.3f}` | Força `{strength:.3f}` | ATR `{atr_val:.3f}`"
+        f"🔎 VI+ `{vi_p:.3f}` vs VI- `{vi_m:.3f}` | Força `{strength:.3f}` | ATR `{atr_val:.3f}`\n"
+        f"⭐ Score: *{score}/100*"
     )
 
 
-async def analyze_once(symbol: str, interval: str) -> Tuple[str, Dict[str, float], float, float, float, float]:
-    candles = await fetch_candles_twelve(symbol, interval, outputsize=220)
-    vi_p, vi_m = XAURON(candles, VI_LENGTH)
+async def analyze_once(symbol: str, interval: str) -> Tuple[str, Dict[str, float], float, float, float, float, int]:
+    # candles do timeframe principal
+    candles = await fetch_candles_twelve(symbol, interval, outputsize=260)
+    closes = [c.c for c in candles]
+    last = candles[-1]
+    last_price = last.c
+
+    # indicadores
+    vi_p, vi_m = vortex(candles, VI_LENGTH)
     atr_val = atr(candles, ATR_LENGTH)
-    last_price = candles[-1].c
 
     signal, strength = decide_signal(vi_p, vi_m)
     direction = "BUY" if vi_p > vi_m else "SELL"
     plan = build_trade_plan(last_price, direction, atr_val)
 
-    return signal, plan, strength, vi_p, vi_m, atr_val
+    # EMA trend filter
+    ema_val = ema(closes[-EMA_LENGTH:], EMA_LENGTH)
+    trend_ok = (last_price > ema_val) if direction == "BUY" else (last_price < ema_val)
+
+    # Volatility filter (ATR%)
+    apct = atr_percent(atr_val, last_price)
+    vol_ok = apct >= MIN_ATR_PCT
+
+    # MTF filter (opcional)
+    mtf_ok = True
+    if MTF_FILTER:
+        candles_htf = await fetch_candles_twelve(symbol, MTF_TIMEFRAME, outputsize=220)
+        vi_p_htf, vi_m_htf = vortex(candles_htf, VI_LENGTH)
+        htf_dir = "BUY" if vi_p_htf > vi_m_htf else "SELL"
+        mtf_ok = (htf_dir == direction)
+
+    # Score (0-100)
+    score = 0
+    score += 30 if mtf_ok else 0
+    score += 25 if trend_ok else 0
+    score += 20 if strength >= (MIN_STRENGTH + 0.10) else (10 if strength >= MIN_STRENGTH else 0)
+    score += 15 if vol_ok else 0
+    # candle confirmation simples
+    score += 10 if ((direction == "BUY" and last.c >= last.o) or (direction == "SELL" and last.c <= last.o)) else 0
+
+    # regras finais: só alerta se for bom
+    if signal == "WAIT" or (MTF_FILTER and not mtf_ok) or (not trend_ok) or (not vol_ok) or (score < MIN_SCORE):
+        return "WAIT", plan, strength, vi_p, vi_m, atr_val, score
+
+    return signal, plan, strength, vi_p, vi_m, atr_val, score
 
 
-# ====== COMMANDS ======
+# =============================================================================
+# COMMANDS
+# =============================================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
 
@@ -255,7 +321,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• `/autoscan on` → começa o scanner\n"
         "• `/autoscan off` → para\n"
         "• `/settf 1min,5min,15min,1h`\n"
-        "• `/setsymbols XAUUSD,EURUSD,BTCUSD`\n",
+        "• `/setsymbols XAUUSD,EURUSD,BTCUSD`\n\n"
+        "📌 Dica: quanto maior o *MIN_SCORE*, mais seletivo e assertivo.",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -305,15 +372,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await update.message.reply_text("⏳ Pegando candles + calculando XAURON…", parse_mode=ParseMode.MARKDOWN)
 
-        signal, plan, strength, vi_p, vi_m, atr_val = await analyze_once(symbol, interval)
+        signal, plan, strength, vi_p, vi_m, atr_val, score = await analyze_once(symbol, interval)
         if signal == "WAIT":
             await update.message.reply_text(
-                f"⏳ *WAIT* — sem setup forte agora em *{symbol}* no *{interval}* (força `{strength:.3f}`).",
+                f"⏳ *WAIT* — sem setup forte agora em *{symbol}* no *{interval}* (score `{score}/100`).",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
 
-        msg = format_alert(symbol, interval, signal, strength, vi_p, vi_m, atr_val, plan)
+        msg = format_alert(symbol, interval, signal, strength, vi_p, vi_m, atr_val, plan, score)
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     except Exception as e:
@@ -321,7 +388,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Erro: `{str(e)}`", parse_mode=ParseMode.MARKDOWN)
 
 
-# ====== BACKGROUND SCANNER JOB ======
+# =============================================================================
+# BACKGROUND SCANNER JOB
+# =============================================================================
 async def autoscan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     app = context.application
 
@@ -337,7 +406,7 @@ async def autoscan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
             for tf in tfs:
                 try:
-                    signal, plan, strength, vi_p, vi_m, atr_val = await analyze_once(symbol, tf)
+                    signal, plan, strength, vi_p, vi_m, atr_val, score = await analyze_once(symbol, tf)
 
                     key = (chat_id, symbol, tf)
                     prev = LAST_STATE.get(key, "NONE")
@@ -345,7 +414,7 @@ async def autoscan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     # manda só quando muda para BUY/SELL
                     if signal in ("BUY", "SELL") and signal != prev:
                         LAST_STATE[key] = signal
-                        msg = format_alert(symbol, tf, signal, strength, vi_p, vi_m, atr_val, plan)
+                        msg = format_alert(symbol, tf, signal, strength, vi_p, vi_m, atr_val, plan, score)
                         await app.bot.send_message(chat_id=chat_id, text=msg, parse_mode=ParseMode.MARKDOWN)
 
                     # atualiza WAIT sem mandar msg (anti-spam)
