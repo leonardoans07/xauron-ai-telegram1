@@ -148,12 +148,12 @@ def atr(candles: List[Candle], length: int) -> float:
     return sum(window) / len(window)
 
 
-def vortex(candles: List[Candle], length: int) -> Tuple[float, float]:
+def XAURON(candles: List[Candle], length: int) -> Tuple[float, float]:
     """
     Mantém a lógica igual. Só o nome exibido mudou (Xauron).
     """
     if len(candles) < length + 1:
-        raise RuntimeError("Poucos candles para Vortex.")
+        raise RuntimeError("Poucos candles para XAURON.")
     vm_plus, vm_minus, tr = [], [], []
 
     for i in range(1, len(candles)):
@@ -215,7 +215,7 @@ def format_alert(symbol: str, interval: str, signal: str, strength: float, vi_p:
 
 async def analyze_once(symbol: str, interval: str) -> Tuple[str, Dict[str, float], float, float, float, float]:
     candles = await fetch_candles_twelve(symbol, interval, outputsize=220)
-    vi_p, vi_m = vortex(candles, VI_LENGTH)
+    vi_p, vi_m = XAURON(candles, VI_LENGTH)
     atr_val = atr(candles, ATR_LENGTH)
     last_price = candles[-1].c
 
